@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+
+# PyInstaller build output
+build/
+dist/
+*.spec
+.buildenv/
+
+# macOS
+.DS_Store
+
+# App runtime data (created in the user's home directory, never in the repo)
+# ~/.desktop_katze.json
+# ~/.desktop_katze_gedanken.json
+
+# Editor
+.idea/
+.vscode/
