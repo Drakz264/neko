@@ -112,9 +112,59 @@ SETTINGS_PATH = os.path.expanduser('~/.desktop_katze.json')
 INTERVALS = [10, 15, 25, 35, 45]
 BREAKS    = [3, 5, 10]
 
+# Verfügbare Katzen-Größen (Faktor auf die native 240×300-Zeichenfläche)
+SCALES = [0.5, 0.65, 0.8, 1.0]
+
 
 def _today():
     return datetime.date.today().isoformat()
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SKALIERBARER CANVAS  — dünner Proxy, damit der Zeichencode in nativen
+# Koordinaten bleiben kann und die Katze trotzdem in jeder Größe rendert.
+# Skaliert Koordinaten, Linienbreiten und Schriftgrößen um den Faktor s.
+# ═════════════════════════════════════════════════════════════════════════════
+class _ScaledCanvas:
+    def __init__(self, canvas, s=1.0):
+        self._c = canvas
+        self._s = s
+
+    def set_scale(self, s):
+        self._s = s
+
+    def _sc(self, args):
+        s = self._s
+        # create_polygon(_round_rect) übergibt eine einzelne Liste von Zahlen
+        if len(args) == 1 and isinstance(args[0], (list, tuple)):
+            return ([a * s if isinstance(a, (int, float)) else a for a in args[0]],)
+        return tuple(a * s if isinstance(a, (int, float)) else a for a in args)
+
+    def _kw(self, kw):
+        s = self._s
+        if isinstance(kw.get('width'), (int, float)):
+            kw['width'] = max(1, kw['width'] * s)
+        if 'font' in kw:
+            f = kw['font']
+            try:
+                size = max(6, int(round(f[1] * s)))
+                kw['font'] = (f[0], size) + tuple(f[2:])
+            except Exception:
+                pass
+        return kw
+
+    def create_line(self, *a, **k):      return self._c.create_line(*self._sc(a), **self._kw(k))
+    def create_oval(self, *a, **k):      return self._c.create_oval(*self._sc(a), **self._kw(k))
+    def create_rectangle(self, *a, **k): return self._c.create_rectangle(*self._sc(a), **self._kw(k))
+    def create_polygon(self, *a, **k):   return self._c.create_polygon(*self._sc(a), **self._kw(k))
+    def create_arc(self, *a, **k):       return self._c.create_arc(*self._sc(a), **self._kw(k))
+    def create_text(self, *a, **k):      return self._c.create_text(*self._sc(a), **self._kw(k))
+
+    def move(self, tag, dx, dy):         return self._c.move(tag, dx * self._s, dy * self._s)
+    def delete(self, *a):                return self._c.delete(*a)
+
+    def __getattr__(self, name):
+        return getattr(self._c, name)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -297,9 +347,11 @@ class DesktopCat:
         self.root.wm_attributes("-topmost", True)
         sw = self.root.winfo_screenwidth()
         sh = self.root.winfo_screenheight()
-        self.wx = sw - self.W_CANVAS - 30
-        self.wy = sh - self.H_CANVAS - 60
-        self.root.geometry(f"{self.W_CANVAS}x{self.H_CANVAS}+{self.wx}+{self.wy}")
+        # physische Fenstergröße (wird in _apply_scale an die Skalierung angepasst)
+        self.win_w, self.win_h = self.W_CANVAS, self.H_CANVAS
+        self.wx = sw - self.win_w - 30
+        self.wy = sh - self.win_h - 60
+        self.root.geometry(f"{self.win_w}x{self.win_h}+{self.wx}+{self.wy}")
 
     def _setup_canvas(self):
         os_name = platform.system()
@@ -320,10 +372,12 @@ class DesktopCat:
             bg = '#1a1a2e'
 
         self.canvas = tk.Canvas(
-            self.root, width=self.W_CANVAS, height=self.H_CANVAS,
+            self.root, width=self.win_w, height=self.win_h,
             bg=bg, highlightthickness=0
         )
         self.canvas.pack()
+        # gesamter Zeichencode läuft über diesen skalierenden Proxy
+        self.d = _ScaledCanvas(self.canvas, 1.0)
 
     def _setup_state(self):
         self.frame = 0
@@ -358,6 +412,9 @@ class DesktopCat:
         self.ambient_on = False
         self._amb = None               # laufender afplay-Prozess (Ambience)
 
+        # Größe der Katze (Faktor auf die native Zeichenfläche)
+        self.scale = 1.0
+
         # ── ADHS-Extras (Feature 1–3), alle per Config an/abschaltbar ──
         self.gentle_start = True       # F3: 10s Atem-Countdown vor dem Fokus
         self.park_enabled = True       # F2: Gedanken-Parkplatz (Tap auf Katze)
@@ -370,9 +427,10 @@ class DesktopCat:
         self._dialog_open = False      # verhindert Dialog-Stapel
 
         self._load_settings()
+        self._apply_scale(save=False)  # geladene Größe auf Fenster/Canvas anwenden
 
     def _setup_bindings(self):
-        c = self.canvas
+        c = self.d
         c.bind('<ButtonPress-1>',   self._drag_start)
         c.bind('<B1-Motion>',       self._drag_motion)
         c.bind('<ButtonRelease-1>', self._drag_end)
@@ -396,6 +454,7 @@ class DesktopCat:
         self.gentle_start = bool(d.get('gentle_start', True))
         self.park_enabled = bool(d.get('park_enabled', True))
         self.antifreeze_enabled = bool(d.get('antifreeze_enabled', True))
+        self.scale = min(1.5, max(0.4, float(d.get('scale', 1.0))))
         # Tagesstatistik nur übernehmen, wenn sie von heute ist
         if d.get('stats_date') == _today():
             self.timer.stats_date = d['stats_date']
@@ -412,6 +471,7 @@ class DesktopCat:
             'gentle_start': self.gentle_start,
             'park_enabled': self.park_enabled,
             'antifreeze_enabled': self.antifreeze_enabled,
+            'scale': self.scale,
             'stats_date': self.timer.stats_date,
             'blocks_today': self.timer.blocks_today,
             'minutes_today': self.timer.minutes_today,
@@ -561,18 +621,19 @@ class DesktopCat:
             pass
 
     def _cat_center(self):
-        """Körpermittelpunkt in Bildschirm-Koordinaten (für Follow)."""
-        return self.wx + self.CAT_CX, self.wy + self.CAT_CY
+        """Körpermittelpunkt in Bildschirm-Koordinaten (für Follow), skaliert."""
+        return self.wx + self.CAT_CX * self.scale, self.wy + self.CAT_CY * self.scale
 
     def _mouse_offset(self):
         """Pupillenversatz Richtung Maus (±5 px), Kopfmitte als Bezug."""
-        cx = self.wx + self.CAT_CX
-        cy = self.wy + self.CAT_HEAD_CY
+        cx = self.wx + self.CAT_CX * self.scale
+        cy = self.wy + self.CAT_HEAD_CY * self.scale
         dx = self.mouse_x - cx
         dy = self.mouse_y - cy
         dist = math.hypot(dx, dy) or 1
-        scale = min(5, dist * 0.03) / dist
-        return dx * scale, dy * scale
+        k = min(5, dist * 0.03) / dist
+        # in nativen Einheiten zurückgeben — der Proxy multipliziert mit scale
+        return dx * k / self.scale, dy * k / self.scale
 
     # ═════════════════════════════════════════════════════════════════════════
     # ZEICHNEN
@@ -589,15 +650,16 @@ class DesktopCat:
             oy += math.sin(self.frame * 0.045) * 4.0
 
         # Katze in Originalkoordinaten zeichnen, dann als Ganzes verschieben
+        # (Proxy skaliert Koordinaten/Breiten/Fonts; move skaliert den Versatz)
         self._draw_cat()
-        self.canvas.move('all', self.OX, oy)
+        self.d.move('all', self.OX, oy)
 
         # HUD (Ring/Timer/Aufgabe) und Konfetti in finalen Koordinaten
         self._draw_hud()
         self._draw_confetti()
 
     def _draw_cat(self):
-        c = self.canvas
+        c = self.d
         f = self.frame
         st = self.state
 
@@ -719,7 +781,7 @@ class DesktopCat:
 
     # ── HUD: Ring (Timer), Aufgabe, Belohnung, Tageszähler ───────────────────
     def _draw_hud(self):
-        c = self.canvas
+        c = self.d
         t = self.timer
         cx, cy, r = self.CAT_CX, self.CAT_CY, self.RING_R
         celebrating = self.frame < self.celebrate_until
@@ -785,7 +847,7 @@ class DesktopCat:
 
     def _draw_prep_hud(self):
         """FEATURE 3: atmender Ring + Countdown als sanfter Einstieg."""
-        c = self.canvas
+        c = self.d
         t = self.timer
         cx, cy = self.CAT_CX, self.CAT_CY
         phase = math.sin(self.frame * 0.045)              # -1..1 (Atemzyklus)
@@ -798,7 +860,7 @@ class DesktopCat:
         self._draw_pill(cx, 270, 'Kurz durchatmen … gleich geht’s los', accent=C_BREAK)
 
     def _draw_confetti(self):
-        c = self.canvas
+        c = self.d
         nxt = []
         for p in self.confetti:
             p['vy'] += 0.06
@@ -813,7 +875,7 @@ class DesktopCat:
 
     # ── Zeichen-Helfer ───────────────────────────────────────────────────────
     def _draw_pill(self, cx, cy, text, accent=C_FOCUS):
-        c = self.canvas
+        c = self.d
         w = max(70, int(6.4 * len(text)) + 26)
         w = min(w, self.W_CANVAS - 8)
         h = 26
@@ -824,7 +886,7 @@ class DesktopCat:
     def _round_rect(self, x1, y1, x2, y2, r, **kw):
         pts = [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r, x2, y2 - r, x2, y2,
                x2 - r, y2, x1 + r, y2, x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
-        return self.canvas.create_polygon(pts, smooth=True, **kw)
+        return self.d.create_polygon(pts, smooth=True, **kw)
 
     @staticmethod
     def _short(s, n):
@@ -891,8 +953,8 @@ class DesktopCat:
             dist_x = self.mouse_x - cat_cx
             speed = min(4, max(1, abs(dist_x) // 40))
             self.wx += speed * self.walk_dir
-            self.wx = max(0, min(sw - self.W_CANVAS, self.wx))
-            self.root.geometry(f"{self.W_CANVAS}x{self.H_CANVAS}+{self.wx}+{self.wy}")
+            self.wx = max(0, min(sw - self.win_w, self.wx))
+            self.root.geometry(f"{self.win_w}x{self.win_h}+{self.wx}+{self.wy}")
             if abs(dist_x) < 60:
                 self.state = 'happy'
                 self.state_timer = 0
@@ -902,10 +964,10 @@ class DesktopCat:
             if self.wx < 0:
                 self.wx, self.walk_dir = 0, 1
                 self.state = 'walk_right'
-            elif self.wx > sw - self.W_CANVAS:
-                self.wx, self.walk_dir = sw - self.W_CANVAS, -1
+            elif self.wx > sw - self.win_w:
+                self.wx, self.walk_dir = sw - self.win_w, -1
                 self.state = 'walk_left'
-            self.root.geometry(f"{self.W_CANVAS}x{self.H_CANVAS}+{self.wx}+{self.wy}")
+            self.root.geometry(f"{self.win_w}x{self.win_h}+{self.wx}+{self.wy}")
             if self.state_timer > random.randint(80, 150):
                 self.state_timer = 0
                 self.state = 'idle'
@@ -948,9 +1010,9 @@ class DesktopCat:
             self._press_moved = True
         self.wx += event.x - self._drag_x
         self.wy += event.y - self._drag_y
-        self.wx = max(0, min(self.screen_w - self.W_CANVAS, self.wx))
-        self.wy = max(0, min(self.screen_h - self.H_CANVAS, self.wy))
-        self.root.geometry(f"{self.W_CANVAS}x{self.H_CANVAS}+{self.wx}+{self.wy}")
+        self.wx = max(0, min(self.screen_w - self.win_w, self.wx))
+        self.wy = max(0, min(self.screen_h - self.win_h, self.wy))
+        self.root.geometry(f"{self.win_w}x{self.win_h}+{self.wx}+{self.wy}")
 
     def _drag_end(self, event):
         self.is_dragging = False
@@ -1023,6 +1085,16 @@ class DesktopCat:
             bp.add_command(label=f'{v} Min{mark}',
                            command=lambda x=v: self._set_break_len(x))
         m.add_cascade(label='☕  Pausen-Länge', menu=bp)
+
+        # Größe der Katze
+        sz = tk.Menu(m, tearoff=0)
+        for v in SCALES:
+            mark = '  ✓' if abs(v - self.scale) < 0.01 else ''
+            label = f'{int(round(v * 100))}%'
+            if v == 1.0:
+                label += ' (Original)'
+            sz.add_command(label=label + mark, command=lambda x=v: self._set_scale(x))
+        m.add_cascade(label='🔍  Größe', menu=sz)
 
         m.add_separator()
 
@@ -1282,6 +1354,24 @@ class DesktopCat:
     def _toggle_antifreeze(self):
         self.antifreeze_enabled = not self.antifreeze_enabled
         self._save_settings()
+
+    # ── Größe der Katze ──────────────────────────────────────────────────────
+    def _apply_scale(self, s=None, save=True):
+        if s is not None:
+            self.scale = s
+        self.win_w = max(1, int(round(self.W_CANVAS * self.scale)))
+        self.win_h = max(1, int(round(self.H_CANVAS * self.scale)))
+        self.d.set_scale(self.scale)
+        self.canvas.config(width=self.win_w, height=self.win_h)
+        # Position im Bildschirm halten
+        self.wx = max(0, min(self.screen_w - self.win_w, self.wx))
+        self.wy = max(0, min(self.screen_h - self.win_h, self.wy))
+        self.root.geometry(f"{self.win_w}x{self.win_h}+{self.wx}+{self.wy}")
+        if save:
+            self._save_settings()
+
+    def _set_scale(self, s):
+        self._apply_scale(s)
 
     def _quit(self):
         self._save_settings()

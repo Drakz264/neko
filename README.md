@@ -43,7 +43,8 @@ you out, while a calm presence keeps you coming back.
   shows you the list at the end of the block.
 - **🚶 Movement breaks** — short breaks with rotating suggestions (stand up, water,
   look out the window) so a 5-minute break doesn't become 40.
-- **🪟 Lives on your desktop** — draggable, transparent, always on top. Drag it anywhere.
+- **🪟 Lives on your desktop** — draggable, transparent, always on top. Drag it
+  anywhere, and resize it (right-click → *Größe*: 50 / 65 / 80 / 100 %).
 
 Everything above can be toggled in the right-click menu, and every setting is optional —
 Neko works great with zero configuration.
@@ -55,7 +56,7 @@ Neko works great with zero configuration.
 | **Left-click (tap)** | Park a thought 💭 |
 | **Left-click + drag** | Move the cat |
 | **Double-click** | Pet the cat (hearts) |
-| **Right-click** | Menu: start focus, intervals, ADHD extras, sound, quit |
+| **Right-click** | Menu: start focus, intervals, **size**, ADHD extras, sound, quit |
 | **Esc** | Quit |
 
 ---
