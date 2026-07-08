@@ -368,7 +368,7 @@ class DesktopCat:
         self.win_w, self.win_h = self.W_CANVAS, self.H_CANVAS
         self.wx = sw - self.win_w - 30
         self.wy = sh - self.win_h - 60
-        self.root.geometry(f"{self.win_w}x{self.win_h}+{self.wx}+{self.wy}")
+        self.root.geometry(f"{self.win_w}x{self.win_h}+{int(self.wx)}+{int(self.wy)}")
 
     def _setup_canvas(self):
         os_name = platform.system()
@@ -868,9 +868,6 @@ class DesktopCat:
             c.create_text(cx, 293,
                           text=f'{fish}  {n} Blöcke · {int(t.minutes_today)} Min heute',
                           font=('Helvetica', 10), fill=C_MUTE)
-        elif t.mode == 'idle':
-            c.create_text(cx, 293, text='Rechtsklick → Fokus starten',
-                          font=('Helvetica', 10), fill=C_MUTE)
 
     def _draw_prep_hud(self):
         """FEATURE 3: atmender Ring + Countdown als sanfter Einstieg."""
@@ -978,10 +975,10 @@ class DesktopCat:
         elif self.state == 'follow':
             cat_cx, _ = self._cat_center()
             dist_x = self.mouse_x - cat_cx
-            speed = min(4, max(1, abs(dist_x) // 40))
-            self.wx += speed * self.walk_dir
+            speed = int(min(4, max(1, abs(dist_x) // 40)))
+            self.wx = int(self.wx + speed * self.walk_dir)
             self.wx = max(0, min(sw - self.win_w, self.wx))
-            self.root.geometry(f"{self.win_w}x{self.win_h}+{self.wx}+{self.wy}")
+            self.root.geometry(f"{self.win_w}x{self.win_h}+{int(self.wx)}+{int(self.wy)}")
             if abs(dist_x) < 60:
                 self.state = 'happy'
                 self.state_timer = 0
@@ -994,7 +991,7 @@ class DesktopCat:
             elif self.wx > sw - self.win_w:
                 self.wx, self.walk_dir = sw - self.win_w, -1
                 self.state = 'walk_left'
-            self.root.geometry(f"{self.win_w}x{self.win_h}+{self.wx}+{self.wy}")
+            self.root.geometry(f"{self.win_w}x{self.win_h}+{int(self.wx)}+{int(self.wy)}")
             if self.state_timer > random.randint(80, 150):
                 self.state_timer = 0
                 self.state = 'idle'
@@ -1061,7 +1058,7 @@ class DesktopCat:
         self.wy += event.y - self._drag_y
         self.wx = max(0, min(self.screen_w - self.win_w, self.wx))
         self.wy = max(0, min(self.screen_h - self.win_h, self.wy))
-        self.root.geometry(f"{self.win_w}x{self.win_h}+{self.wx}+{self.wy}")
+        self.root.geometry(f"{self.win_w}x{self.win_h}+{int(self.wx)}+{int(self.wy)}")
 
     def _drag_end(self, event):
         self.is_dragging = False
@@ -1422,7 +1419,7 @@ class DesktopCat:
         # Position im Bildschirm halten
         self.wx = max(0, min(self.screen_w - self.win_w, self.wx))
         self.wy = max(0, min(self.screen_h - self.win_h, self.wy))
-        self.root.geometry(f"{self.win_w}x{self.win_h}+{self.wx}+{self.wy}")
+        self.root.geometry(f"{self.win_w}x{self.win_h}+{int(self.wx)}+{int(self.wy)}")
         if save:
             self._save_settings()
 
