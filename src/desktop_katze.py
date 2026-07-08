@@ -254,6 +254,9 @@ REFRAMES = {
 CHECKIN_EVERY = 600        # seconds between soft "still with it?" nudges
 CHECKIN_LINES = ['still with it? 🐾', 'here with you 🐾', 'one thing at a time 🐾']
 
+# Perch: after the user is idle this long, the cat climbs onto the front window
+PERCH_IDLE_SEC = 10
+
 
 def _today():
     return datetime.date.today().isoformat()
@@ -616,11 +619,17 @@ class DesktopCat:
         self.leave_label = ''
         self._leave_fired = set()      # warnings already shown for this target
 
+        # Perch on a window when idle
+        self.perch_enabled = True
+        self._perch_target = None      # (x, y, w, h) of the window to sit on
+        self._last_mouse_move = time.monotonic()
+
         self._load_settings()
         self._apply_scale(save=False)  # apply the loaded size to window/canvas
         self.root.after(CLOUD_CHECK_MS, self._cloud_scheduler)
         self.root.after(400, self._spaces_tick)    # show over full-screen apps
         self.root.after(20000, self._leave_watch)  # time-to-leave reminder watcher
+        self.root.after(2000, self._perch_tick)    # sit on an open window when idle
 
     def _setup_bindings(self):
         c = self.d
@@ -651,6 +660,7 @@ class DesktopCat:
         self.flow_mode = bool(d.get('flow_mode', True))
         self.checkin_enabled = bool(d.get('checkin_enabled', False))
         self.ambient_type = d.get('ambient_type', 'purr')
+        self.perch_enabled = bool(d.get('perch_enabled', True))
         self.scale = min(1.5, max(0.4, float(d.get('scale', 1.0))))
         # only take over daily stats if they're from today
         if d.get('stats_date') == _today():
@@ -672,6 +682,7 @@ class DesktopCat:
             'flow_mode': self.flow_mode,
             'checkin_enabled': self.checkin_enabled,
             'ambient_type': self.ambient_type,
+            'perch_enabled': self.perch_enabled,
             'scale': self.scale,
             'stats_date': self.timer.stats_date,
             'blocks_today': self.timer.blocks_today,
@@ -830,6 +841,122 @@ class DesktopCat:
         self._enable_all_spaces()
         self.root.after(1500, self._spaces_tick)
 
+    # ── Sit on an open window (macOS) ────────────────────────────────────────
+    def _get_top_window(self):
+        """Return (x, y, w, h) of the frontmost normal app window, or None.
+        Uses CGWindowListCopyWindowInfo via ctypes — geometry only, no content,
+        no special permission. Skips our own windows, the menubar, dock, etc."""
+        if platform.system() != 'Darwin':
+            return None
+        try:
+            import ctypes
+            import ctypes.util
+            from ctypes import (c_void_p, c_uint32, c_long, c_double, c_bool,
+                                 c_int, Structure, POINTER, byref, create_string_buffer)
+            cg = ctypes.cdll.LoadLibrary(ctypes.util.find_library('CoreGraphics'))
+            cf = ctypes.cdll.LoadLibrary(ctypes.util.find_library('CoreFoundation'))
+            cg.CGWindowListCopyWindowInfo.restype = c_void_p
+            cg.CGWindowListCopyWindowInfo.argtypes = [c_uint32, c_uint32]
+            cf.CFArrayGetCount.restype = c_long
+            cf.CFArrayGetCount.argtypes = [c_void_p]
+            cf.CFArrayGetValueAtIndex.restype = c_void_p
+            cf.CFArrayGetValueAtIndex.argtypes = [c_void_p, c_long]
+            cf.CFDictionaryGetValue.restype = c_void_p
+            cf.CFDictionaryGetValue.argtypes = [c_void_p, c_void_p]
+            cf.CFNumberGetValue.restype = c_bool
+            cf.CFNumberGetValue.argtypes = [c_void_p, c_long, c_void_p]
+            cf.CFStringGetCString.restype = c_bool
+            cf.CFStringGetCString.argtypes = [c_void_p, c_void_p, c_long, c_uint32]
+            cf.CFRelease.argtypes = [c_void_p]
+
+            class CGPoint(Structure):
+                _fields_ = [('x', c_double), ('y', c_double)]
+
+            class CGSize(Structure):
+                _fields_ = [('width', c_double), ('height', c_double)]
+
+            class CGRect(Structure):
+                _fields_ = [('origin', CGPoint), ('size', CGSize)]
+
+            cg.CGRectMakeWithDictionaryRepresentation.restype = c_bool
+            cg.CGRectMakeWithDictionaryRepresentation.argtypes = [c_void_p, POINTER(CGRect)]
+            k_bounds = c_void_p.in_dll(cg, 'kCGWindowBounds')
+            k_layer = c_void_p.in_dll(cg, 'kCGWindowLayer')
+            k_owner = c_void_p.in_dll(cg, 'kCGWindowOwnerName')
+
+            OPT = (1 << 0) | (1 << 4)   # onScreenOnly | excludeDesktopElements
+            arr = cg.CGWindowListCopyWindowInfo(OPT, 0)
+            if not arr:
+                return None
+            best = None
+            try:
+                for i in range(cf.CFArrayGetCount(arr)):
+                    d = cf.CFArrayGetValueAtIndex(arr, i)
+                    if not d:
+                        continue
+                    layer = c_int(0)
+                    lv = cf.CFDictionaryGetValue(d, k_layer)
+                    if lv:
+                        cf.CFNumberGetValue(lv, 9, byref(layer))   # kCFNumberIntType
+                    if layer.value != 0:
+                        continue                                    # only normal windows
+                    owner = ''
+                    ov = cf.CFDictionaryGetValue(d, k_owner)
+                    if ov:
+                        buf = create_string_buffer(256)
+                        if cf.CFStringGetCString(ov, buf, 256, 0x08000100):
+                            owner = buf.value.decode('utf-8', 'ignore')
+                    if owner in ('Neko', 'Python', 'python3', 'python3.9'):
+                        continue                                    # skip ourselves
+                    bv = cf.CFDictionaryGetValue(d, k_bounds)
+                    if not bv:
+                        continue
+                    rect = CGRect()
+                    if not cg.CGRectMakeWithDictionaryRepresentation(bv, byref(rect)):
+                        continue
+                    x, y, w, h = (rect.origin.x, rect.origin.y,
+                                  rect.size.width, rect.size.height)
+                    if w < 300 or h < 180:
+                        continue                                    # skip small utility windows
+                    best = (x, y, w, h)
+                    break                                           # first = frontmost
+            finally:
+                cf.CFRelease(arr)
+            return best
+        except Exception:
+            return None
+
+    def _perch_tick(self):
+        """Every so often, decide which window to sit on (throttles the query)."""
+        self.root.after(1500, self._perch_tick)
+        if (not self.perch_enabled or self.is_dragging
+                or self.timer.mode != 'idle'
+                or time.monotonic() - self._last_mouse_move <= PERCH_IDLE_SEC):
+            self._perch_target = None
+        else:
+            self._perch_target = self._get_top_window()
+
+    def _perch_behavior(self):
+        """Glide onto the top edge of the target window and sit there."""
+        rect = self._perch_target
+        if not rect:
+            self.state = 'idle'
+            return
+        x, y, w, _h = rect
+        cat_center = (self.CAT_CX + self.OX) * self.scale     # cat's mid-x in the window
+        seat = (140 + self.OY) * self.scale                   # paw line from window top
+        seat_x = max(x + 40, min(x + w - 40, x + w * 0.72))   # sit on the right-ish
+        tx = max(0, min(self.screen_w - self.win_w, int(seat_x - cat_center)))
+        ty = max(0, min(self.screen_h - self.win_h, int(y - seat)))
+        # glide toward the perch spot (looks like climbing on)
+        self.wx += int(round((tx - self.wx) * 0.25))
+        self.wy += int(round((ty - self.wy) * 0.25))
+        if abs(tx - self.wx) <= 1:
+            self.wx = tx
+        if abs(ty - self.wy) <= 1:
+            self.wy = ty
+        self.root.geometry(f"{self.win_w}x{self.win_h}+{int(self.wx)}+{int(self.wy)}")
+
     # ── Timer callbacks ──────────────────────────────────────────────────────
     def _pick_break_tip(self):
         # rotating suggestion (novelty): not the same as last time
@@ -930,8 +1057,10 @@ class DesktopCat:
     # ── Mouse position ───────────────────────────────────────────────────────
     def _update_mouse(self):
         try:
-            self.mouse_x = self.root.winfo_pointerx()
-            self.mouse_y = self.root.winfo_pointery()
+            nx, ny = self.root.winfo_pointerx(), self.root.winfo_pointery()
+            if abs(nx - self.mouse_x) + abs(ny - self.mouse_y) > 3:
+                self._last_mouse_move = time.monotonic()
+            self.mouse_x, self.mouse_y = nx, ny
         except Exception:
             pass
 
@@ -1254,6 +1383,21 @@ class DesktopCat:
         if self.state in ('focus', 'prep'):
             self.state = 'idle'
             self.state_timer = 0
+
+        # Perch: sit on a long-open window once the user has been idle a while
+        if (self.perch_enabled and self.timer.mode == 'idle' and not self.is_dragging
+                and self.state not in ('happy', 'sleep')):
+            user_idle = (time.monotonic() - self._last_mouse_move) > PERCH_IDLE_SEC
+            if self.state == 'perch':
+                if user_idle and self._perch_target:
+                    self._perch_behavior()
+                    return
+                self.state, self.state_timer = 'idle', 0   # user active → hop off
+            elif user_idle and self._perch_target:
+                self.state = 'perch'
+                self._perch_behavior()
+                return
+
         self._idle_behavior()
 
     def _idle_behavior(self):
@@ -1488,6 +1632,8 @@ class DesktopCat:
                        command=self._toggle_flow)
         ex.add_command(label='🐾  Focus check-ins  ' + ('✓' if self.checkin_enabled else '–'),
                        command=self._toggle_checkin)
+        ex.add_command(label='🪟  Sit on open windows  ' + ('✓' if self.perch_enabled else '–'),
+                       command=self._toggle_perch)
         m.add_cascade(label='🧠  ADHD extras', menu=ex)
 
         m.add_separator()
@@ -2060,6 +2206,12 @@ class DesktopCat:
     def _toggle_checkin(self):
         self.checkin_enabled = not self.checkin_enabled
         self._last_checkin = time.monotonic()
+        self._save_settings()
+
+    def _toggle_perch(self):
+        self.perch_enabled = not self.perch_enabled
+        if not self.perch_enabled and self.state == 'perch':
+            self.state = 'idle'
         self._save_settings()
 
     def _set_ambient_type(self, kind):

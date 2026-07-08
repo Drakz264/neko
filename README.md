@@ -63,6 +63,8 @@ you out, while a calm presence keeps you coming back.
 - **🎵 Focus soundscape** — optional purr or built-in **brown noise**.
 - **💗 Check-in** — a gentle, RSD-aware mood check with kind reframes.
 - **⏰ Time-to-leave reminder** — beats time blindness; nudges 15 & 5 min before.
+- **🪟 Perches on your windows** — leave the mouse alone for a bit and the cat climbs
+  onto the top edge of the window you're using, like it's sitting on your work.
 - **🌱 Growing plant + surprises** — a plant that grows with your focus (never shrinks,
   no streak guilt), a party hat once you're on a roll, and the occasional rare reward.
 
