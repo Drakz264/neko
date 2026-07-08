@@ -66,26 +66,27 @@ Neko works great with zero configuration.
 
 1. Go to the [**Releases**](../../releases) page and download `Neko.app.zip`.
 2. Double-click the `.zip` to unzip it. Move **Neko.app** to your **Applications** folder (optional).
-3. **First launch** — because the app isn't signed with a paid Apple certificate, macOS
-   will refuse to open it on a normal double-click. This is expected. Do this instead:
+3. **First launch.** macOS will say something like *"Apple could not verify 'Neko' is
+   free of malware."* **This is normal for any free app that isn't signed with a paid
+   ($99/yr) Apple certificate — it is not a real warning about this app.** Neko is
+   open-source and does nothing to your system (see [what it does](#is-it-safe-what-it-does-to-your-mac)
+   below). To open it, use **one** of these:
 
-   > **Right-click** (or Control-click) **Neko.app → Open → Open** in the dialog.
+   **Option A — no Terminal (recommended):**
+   1. Double-click **Neko.app** → in the warning, click **Done**.
+   2. Open  **System Settings → Privacy & Security**, scroll down to the **Security** section.
+   3. There you'll see *"Neko.app was blocked…"* → click **Open Anyway** → confirm with
+      Touch ID / password. Neko opens and won't ask again.
 
-   You only need to do this **once**. After that it opens normally.
+   **Option B — one Terminal command (surefire):** removes the "downloaded from the
+   internet" flag, then it just opens by double-click. Adjust the path if you moved it:
+   ```bash
+   xattr -dr com.apple.quarantine ~/Downloads/Neko.app
+   ```
 
-<details>
-<summary>If macOS still says "Neko can't be opened" or "is damaged"</summary>
-
-Newer macOS versions sometimes hide the right-click option. Two fixes:
-
-- **System Settings → Privacy & Security**, scroll down, and click **"Open Anyway"**
-  next to the Neko message, then launch again.
-- Or, in Terminal, remove the quarantine flag once:
-  ```bash
-  xattr -dr com.apple.quarantine /Applications/Neko.app
-  ```
-  (It says "damaged" only because it's unsigned + quarantined, not because anything is wrong.)
-</details>
+> Why does this happen? Apple only skips this warning for apps signed & "notarized" with a
+> paid Apple Developer account. Lots of free/open-source Mac apps are distributed exactly
+> like this — the steps above are the standard way to open them.
 
 ---
 
