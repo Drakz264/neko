@@ -254,8 +254,9 @@ REFRAMES = {
 CHECKIN_EVERY = 600        # seconds between soft "still with it?" nudges
 CHECKIN_LINES = ['still with it? 🐾', 'here with you 🐾', 'one thing at a time 🐾']
 
-# Perch: after the user is idle this long, the cat climbs onto the front window
-PERCH_IDLE_SEC = 10
+# Perch: after the mouse rests this briefly, the cat climbs onto the front window
+# (and hops off again the moment you move the mouse)
+PERCH_SETTLE = 3
 
 
 def _today():
@@ -927,11 +928,10 @@ class DesktopCat:
             return None
 
     def _perch_tick(self):
-        """Every so often, decide which window to sit on (throttles the query)."""
+        """Every so often, refresh which window to sit on (throttles the query
+        so we follow the window if it moves or you switch apps)."""
         self.root.after(1500, self._perch_tick)
-        if (not self.perch_enabled or self.is_dragging
-                or self.timer.mode != 'idle'
-                or time.monotonic() - self._last_mouse_move <= PERCH_IDLE_SEC):
+        if not self.perch_enabled or self.is_dragging or self.timer.mode != 'idle':
             self._perch_target = None
         else:
             self._perch_target = self._get_top_window()
@@ -1384,19 +1384,17 @@ class DesktopCat:
             self.state = 'idle'
             self.state_timer = 0
 
-        # Perch: sit on a long-open window once the user has been idle a while
+        # Perch: sit on the front window. Follow the mouse only while you're
+        # actively moving it; once it rests briefly, climb onto the window.
         if (self.perch_enabled and self.timer.mode == 'idle' and not self.is_dragging
-                and self.state not in ('happy', 'sleep')):
-            user_idle = (time.monotonic() - self._last_mouse_move) > PERCH_IDLE_SEC
-            if self.state == 'perch':
-                if user_idle and self._perch_target:
-                    self._perch_behavior()
-                    return
-                self.state, self.state_timer = 'idle', 0   # user active → hop off
-            elif user_idle and self._perch_target:
+                and self.state != 'happy' and self._perch_target):
+            moving = (time.monotonic() - self._last_mouse_move) < PERCH_SETTLE
+            if not (self.follow_mouse and moving):
                 self.state = 'perch'
                 self._perch_behavior()
                 return
+            if self.state == 'perch':
+                self.state, self.state_timer = 'idle', 0   # grabbed the mouse → hop off
 
         self._idle_behavior()
 
