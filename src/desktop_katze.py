@@ -53,7 +53,7 @@ C_GOLD   = '#ffcf6b'
 
 CONFETTI_COLORS = ['#ff6b6b', '#ffd166', '#6bcb77', '#4d96ff', '#c77dff', '#ff9e6b']
 
-# ── Text: active breaks (movement + novelty through rotation) ────────────────
+# ── Text: active breaks (movement + basic needs + novelty through rotation) ──
 BREAK_TIPS = [
     'Stand up & stretch properly 🙆',
     'Grab a glass of water 💧',
@@ -63,6 +63,10 @@ BREAK_TIPS = [
     'Take three deep breaths 🌬️',
     'Close your eyes & relax for a moment 😌',
     'Pet the cat & breathe 😸',
+    'Unclench your jaw & drop your shoulders 😮‍💨',
+    'Rest your eyes: look 20 ft away for 20 s 👁️',
+    'Fix your posture — sit tall 🧍',
+    'Roll your neck & wrists 🔁',
 ]
 
 # ── Text: dopamine menu (instant mini-reward after a block) ──────────────────
@@ -185,9 +189,10 @@ MICRO_SECONDS = 120        # length of an anti-freeze block (2 min)
 # ── Sound (macOS system sounds, quiet & mutable) ─────────────────────────────
 SOUND_DIR = '/System/Library/Sounds/'
 SOUNDS = {
-    'wrapup':    ('Tink.aiff',  0.25),   # gentle heads-up
-    'complete':  ('Glass.aiff', 0.40),   # block finished
-    'break_end': ('Ping.aiff',  0.30),   # break over
+    'wrapup':    ('Tink.aiff',   0.25),  # gentle heads-up
+    'complete':  ('Glass.aiff',  0.40),  # block finished
+    'break_end': ('Ping.aiff',   0.30),  # break over
+    'start':     ('Bottle.aiff', 0.22),  # start-of-block anchor (ritual)
 }
 
 SETTINGS_PATH = os.path.expanduser('~/.desktop_katze.json')
@@ -211,6 +216,43 @@ BTN_STYLES = {
     'secondary': ('#3a3a3c', '#e8e8ea', '#4a4a4e'),
     'accent':    ('#2f4a63', '#cfe8ff', '#3c5f80'),
 }
+
+# Extra data files (own JSON, local only)
+TASKS_PATH = os.path.expanduser('~/.desktop_katze_tasks.json')
+
+# Flow mode: at a block's end you can extend instead of a hard stop
+FLOW_EXTEND_MIN = 10
+LONG_FOCUS_NUDGE = 55      # minutes of near-continuous focus → gently suggest a break
+
+# Progress plant (non-punishing, never shrinks within a day) by blocks today
+PLANT_STAGES = ['🌱', '🌿', '☘️', '🪴', '🌷', '🌳']
+
+# Rare surprise reward (variable reinforcement — extra dopamine now and then)
+SURPRISE_REWARDS = [
+    '✨ Rare drop: you get a gold star ⭐ — frame it.',
+    '✨ Surprise: the cat did a tiny backflip in your honor 🤸',
+    '✨ Jackpot: permission to be smug for 10 seconds 😎',
+    '✨ Lucky block! Take a 3-minute victory lap 🏃',
+    '✨ Bonus: today’s you is officially unstoppable 🚀',
+]
+
+# Emotion check-in (RSD-aware, gentle reframes — no data stored)
+CHECK_MOODS = [('😌 okay', 'ok'), ('😣 stuck', 'stuck'),
+               ('😞 low', 'low'), ('🔥 great', 'great')]
+REFRAMES = {
+    'ok':    ['Steady is good. One small next step is plenty.',
+              'You showed up — that already counts.'],
+    'stuck': ['Stuck ≠ failing. Shrink the step until it feels silly.',
+              'Try the anti-freeze button — 2 minutes, that’s all.'],
+    'low':   ['Be as kind to yourself as you’d be to a friend.',
+              'A rough day doesn’t erase your effort. Rest is allowed.'],
+    'great': ['Love it — ride the wave, but keep water nearby 💧',
+              'Bank this feeling. You did that.'],
+}
+
+# Focus check-in (optional gentle re-anchor during a block)
+CHECKIN_EVERY = 600        # seconds between soft "still with it?" nudges
+CHECKIN_LINES = ['still with it? 🐾', 'here with you 🐾', 'one thing at a time 🐾']
 
 
 def _today():
@@ -305,6 +347,8 @@ class FocusTimer:
         self.total = 0.0
         self.wrapup_fired = False
         self.micro = False       # True = anti-freeze 2-min block (Feature 1)
+        self.block_min = 25      # length of the current focus block (min)
+        self.since_break = 0.0   # focus minutes since the last real break (flow)
         self._last = None
 
         # user-adjustable
@@ -332,11 +376,12 @@ class FocusTimer:
         self.paused = False
         self._last = time.monotonic()
 
-    def start_focus(self):
+    def start_focus(self, minutes=None):
         self._sync_day()
         self.mode = 'focus'
         self.micro = False
-        self.total = self.focus_len * 60
+        self.block_min = minutes if minutes else self.focus_len
+        self.total = self.block_min * 60
         self.remaining = self.total
         self.paused = False
         self.wrapup_fired = False
@@ -359,6 +404,7 @@ class FocusTimer:
         self.remaining = self.total
         self.paused = False
         self.wrapup_fired = False
+        self.since_break = 0.0
         self._last = time.monotonic()
         self.app._pick_break_tip()
 
@@ -422,11 +468,12 @@ class FocusTimer:
                 self.micro = False
                 self.app._on_micro_complete()
             elif self.mode == 'focus':
-                # stats + instant reward, then straight into the break
+                # stats + instant reward; the app then decides break vs. flow
                 self.blocks_today += 1
-                self.minutes_today += self.focus_len
+                self.minutes_today += self.block_min
+                self.since_break += self.block_min
+                self.mode = 'idle'
                 self.app._on_focus_complete()
-                self.start_break()
             else:
                 self.app._on_break_complete()
                 self.stop()
@@ -555,10 +602,25 @@ class DesktopCat:
         self._cloud_hide_id = None     # scheduled auto-hide
         self.cloud_last = time.monotonic()
 
+        # More ADHD extras
+        self.flow_mode = True          # extend a block instead of a hard stop
+        self.checkin_enabled = False   # gentle re-anchor pings during focus
+        self.ambient_type = 'purr'     # focus soundscape: 'purr' or 'brown'
+        self.tasklist = self._load_tasks()   # optional to-do list ("pick for me")
+        self.steps = []                # sub-steps of the current task (chunking)
+        self.step_idx = 0              # which step we're on
+        self.plan = ''                 # if–then implementation intention
+        self._last_checkin = time.monotonic()
+        self._brown_path = None        # cached brown-noise WAV path
+        self.leave_at = None           # (hour, minute) target, or None
+        self.leave_label = ''
+        self._leave_fired = set()      # warnings already shown for this target
+
         self._load_settings()
         self._apply_scale(save=False)  # apply the loaded size to window/canvas
         self.root.after(CLOUD_CHECK_MS, self._cloud_scheduler)
-        self.root.after(400, self._spaces_tick)   # show over full-screen apps
+        self.root.after(400, self._spaces_tick)    # show over full-screen apps
+        self.root.after(20000, self._leave_watch)  # time-to-leave reminder watcher
 
     def _setup_bindings(self):
         c = self.d
@@ -586,6 +648,9 @@ class DesktopCat:
         self.park_enabled = bool(d.get('park_enabled', True))
         self.antifreeze_enabled = bool(d.get('antifreeze_enabled', True))
         self.cloud_enabled = bool(d.get('cloud_enabled', True))
+        self.flow_mode = bool(d.get('flow_mode', True))
+        self.checkin_enabled = bool(d.get('checkin_enabled', False))
+        self.ambient_type = d.get('ambient_type', 'purr')
         self.scale = min(1.5, max(0.4, float(d.get('scale', 1.0))))
         # only take over daily stats if they're from today
         if d.get('stats_date') == _today():
@@ -604,6 +669,9 @@ class DesktopCat:
             'park_enabled': self.park_enabled,
             'antifreeze_enabled': self.antifreeze_enabled,
             'cloud_enabled': self.cloud_enabled,
+            'flow_mode': self.flow_mode,
+            'checkin_enabled': self.checkin_enabled,
+            'ambient_type': self.ambient_type,
             'scale': self.scale,
             'stats_date': self.timer.stats_date,
             'blocks_today': self.timer.blocks_today,
@@ -633,6 +701,24 @@ class DesktopCat:
         except Exception:
             pass
 
+    # ── Task list persistence (for "pick a task for me") ─────────────────────
+    def _load_tasks(self):
+        try:
+            with open(TASKS_PATH, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                return [str(x) for x in data]
+        except Exception:
+            pass
+        return []
+
+    def _save_tasks(self):
+        try:
+            with open(TASKS_PATH, 'w', encoding='utf-8') as f:
+                json.dump(self.tasklist, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
     # ── Sound ────────────────────────────────────────────────────────────────
     def _play(self, key):
         if not self.sound_on or platform.system() != 'Darwin':
@@ -650,17 +736,46 @@ class DesktopCat:
         except Exception:
             pass
 
+    def _ensure_brown_noise(self):
+        """Generate a short brown-noise WAV once (pure stdlib) and cache it."""
+        if self._brown_path and os.path.exists(self._brown_path):
+            return self._brown_path
+        import wave
+        import array
+        path = os.path.expanduser('~/.desktop_katze_brown.wav')
+        try:
+            rate, secs = 22050, 10
+            data = array.array('h')
+            val = 0.0
+            for _ in range(rate * secs):
+                val = val * 0.99 + random.uniform(-1.0, 1.0) * 0.06
+                val = max(-1.0, min(1.0, val))
+                data.append(int(val * 11000))
+            with wave.open(path, 'w') as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(rate)
+                w.writeframes(data.tobytes())
+            self._brown_path = path
+            return path
+        except Exception:
+            return None
+
     def _ambient_tick(self):
-        """Very quiet, optional focus ambience (Purr) — only during focus."""
+        """Very quiet, optional focus soundscape (purr or brown noise) — only
+        during focus. Loops by re-triggering afplay when it ends."""
         want = (self.ambient_on and self.sound_on
                 and self.timer.mode == 'focus' and platform.system() == 'Darwin')
         if want:
             if self._amb is None or self._amb.poll() is not None:
-                p = SOUND_DIR + 'Purr.aiff'
-                if os.path.exists(p):
+                if self.ambient_type == 'brown':
+                    src, vol = self._ensure_brown_noise(), '0.5'
+                else:
+                    src, vol = SOUND_DIR + 'Purr.aiff', '0.12'
+                if src and os.path.exists(src):
                     try:
                         self._amb = subprocess.Popen(
-                            ['afplay', '-v', '0.12', p],
+                            ['afplay', '-v', vol, src],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     except Exception:
                         self._amb = None
@@ -725,10 +840,18 @@ class DesktopCat:
         # gentle heads-up ~2 min before end (color turns amber via wrapup_fired)
         self._play('wrapup')
 
-    def begin_focus(self, task):
-        """Start focus — with a gentle breathing countdown depending on settings (F3)."""
+    def begin_focus(self, task, steps=None, plan=''):
+        """Start focus — with a gentle breathing countdown depending on settings (F3).
+        Optionally with sub-steps (chunking) and an if–then plan."""
         self.current_task = (task or '').strip()
+        self.steps = [s for s in (steps or []) if s]
+        self.step_idx = 0
+        self.plan = (plan or '').strip()
         self.info_msg = ''
+        if self.plan:
+            # surface the implementation intention briefly at the start
+            self.info_msg = '📝 If stuck: ' + self._short(self.plan, 28)
+            self.info_until = self.frame + 220
         if self.gentle_start:
             self.timer.start_prep()
             self.state, self.state_timer = 'prep', 0
@@ -736,9 +859,17 @@ class DesktopCat:
             self.timer.start_focus()
             self._on_focus_begin()
 
+    def _next_step(self):
+        # advance the chunking checklist (Feature: task breakdown)
+        if self.steps and self.step_idx < len(self.steps) - 1:
+            self.step_idx += 1
+            self._add_hearts(3)
+
     def _on_focus_begin(self):
         # shared entry into a real focus block (directly or after prep)
         self.state, self.state_timer = 'focus', 0
+        self._last_checkin = time.monotonic()
+        self._play('start')          # small consistent start ritual / anchor
 
     def _on_focus_complete(self):
         # (3) INSTANT MICRO-REWARD: proud/happy + hearts + confetti
@@ -746,15 +877,23 @@ class DesktopCat:
         self.state_timer = 0
         self.happy_until = self.frame + 120
         self.celebrate_until = self.frame + 130
-        self.info_msg = random.choice(DOPAMINE_IDEAS)   # dopamine menu
-        self.info_until = self.frame + 200
+        # dopamine menu, with a rare surprise (variable reinforcement)
+        if random.random() < 0.12:
+            self.info_msg = random.choice(SURPRISE_REWARDS)
+        else:
+            self.info_msg = random.choice(DOPAMINE_IDEAS)
+        self.info_until = self.frame + 220
         self._spawn_confetti(30)
         self._add_hearts(9)
         self._play('complete')
         self._save_settings()
-        # FEATURE 2: gently show the parked thoughts at block end
-        if self.thoughts:
-            self.root.after(1400, self._show_thoughts_review)
+        # Flow mode: offer to extend instead of a hard stop; else auto-break
+        if self.flow_mode:
+            self.root.after(1200, self._show_flow_prompt)
+        else:
+            self.timer.start_break()
+            if self.thoughts:
+                self.root.after(1400, self._show_thoughts_review)
 
     def _on_micro_complete(self):
         # FEATURE 1: anti-freeze over — small acknowledgment + "keep going?"
@@ -870,6 +1009,13 @@ class DesktopCat:
         c.create_polygon(136, 46, 145, 8, 116, 32, fill=C_BODY, outline=C_SHADE, width=1)
         c.create_polygon(57, 43, 50, 15, 71, 31, fill=C_PINK,  outline='')
         c.create_polygon(133, 43, 140, 15, 119, 31, fill=C_PINK, outline='')
+
+        # ── Cosmetic reward: a little party hat once you're on a roll today ──
+        if self.timer.blocks_today >= 3 and st not in ('sleep',):
+            c.create_polygon(95, -8, 79, 22, 111, 22, fill='#ff9e6b',
+                             outline=C_SHADE, width=1)
+            c.create_line(83, 14, 107, 14, fill='#ffd166', width=2)
+            c.create_oval(90, -14, 100, -4, fill='#ffd166', outline='')
 
         # ── Eyes ──
         is_blink = (f % 90) < 3
@@ -1003,6 +1149,10 @@ class DesktopCat:
         pill = None
         if self.info_msg and self.frame < self.info_until:
             pill = (self.info_msg, C_GOLD)                       # dopamine/prompt
+        elif t.mode == 'focus' and self.steps:
+            # chunking: show the current step + progress
+            cur = self.steps[min(self.step_idx, len(self.steps) - 1)]
+            pill = (f'▸ {self.step_idx + 1}/{len(self.steps)}  ' + self._short(cur, 24), C_FOCUS)
         elif t.mode == 'focus' and self.current_task:
             # (4) ONE-TASK FOCUS: the current task stays visible
             pill = ('📌 ' + self._short(self.current_task, 30), C_FOCUS)
@@ -1015,9 +1165,10 @@ class DesktopCat:
         # ── Daily counter (instant, visible progress) ──
         n = t.blocks_today
         if n > 0:
-            fish = '🐟' * min(n, 5) + ('…' if n > 5 else '')
+            # a plant that grows with your focus (never shrinks — no streak guilt)
+            plant = PLANT_STAGES[min(n, len(PLANT_STAGES) - 1)]
             c.create_text(cx, 293,
-                          text=f'{fish}  {n} blocks · {int(t.minutes_today)} min today',
+                          text=f'{plant}  {n} blocks · {int(t.minutes_today)} min today',
                           font=('Helvetica', 10), fill=C_MUTE)
 
     def _draw_prep_hud(self):
@@ -1088,6 +1239,12 @@ class DesktopCat:
             return
 
         if mode == 'focus':
+            # optional gentle re-anchor (body-double check-in), never nagging
+            if (self.checkin_enabled and self.frame >= self.info_until
+                    and time.monotonic() - self._last_checkin >= CHECKIN_EVERY):
+                self.info_msg = random.choice(CHECKIN_LINES)
+                self.info_until = self.frame + 100
+                self._last_checkin = time.monotonic()
             # BODY DOUBLE: sit calmly, don't roam, don't sleep, don't chase the
             # mouse (otherwise the cat becomes a distraction).
             self.state = 'happy' if self.frame < self.happy_until else 'focus'
@@ -1260,6 +1417,8 @@ class DesktopCat:
             skip = '⏭️  Skip block' if mode == 'focus' else '⏭️  Skip break'
             m.add_command(label=skip, command=self.timer.skip)
             m.add_command(label='⏹️  End session', command=self.timer.stop)
+            if mode == 'focus' and self.steps and self.step_idx < len(self.steps) - 1:
+                m.add_command(label='✓  Next step', command=self._next_step)
 
         # FEATURE 2: park a thought (also by tapping the cat)
         if self.park_enabled:
@@ -1298,11 +1457,22 @@ class DesktopCat:
         # Toggles
         m.add_command(label='🔊  Sound  ' + ('✓' if self.sound_on else '–'),
                       command=self._toggle_sound)
-        m.add_command(label='🎵  Ambience (focus)  ' + ('✓' if self.ambient_on else '–'),
-                      command=self._toggle_ambient)
+        snd = tk.Menu(m, tearoff=0)
+        snd.add_command(label='Off' + ('  ✓' if not self.ambient_on else ''),
+                        command=self._ambient_off)
+        snd.add_command(label='Purr' + ('  ✓' if self.ambient_on and self.ambient_type == 'purr' else ''),
+                        command=lambda: self._set_ambient_type('purr'))
+        snd.add_command(label='Brown noise' + ('  ✓' if self.ambient_on and self.ambient_type == 'brown' else ''),
+                        command=lambda: self._set_ambient_type('brown'))
+        m.add_cascade(label='🎵  Focus sound', menu=snd)
         m.add_command(label='👁  Follow mouse  ' + ('✓' if self.follow_mouse else '–'),
                       command=self._toggle_follow)
         m.add_command(label='😸  Pet', command=self._pet)
+
+        # Tools
+        m.add_command(label='📝  Task list…', command=self._open_tasklist)
+        m.add_command(label='💗  Check in', command=self._show_checkin)
+        m.add_command(label='⏰  Remind me to leave…', command=self._open_leave_reminder)
 
         # ADHD extras (Features 1–3) toggleable
         ex = tk.Menu(m, tearoff=0)
@@ -1314,6 +1484,10 @@ class DesktopCat:
                        command=self._toggle_antifreeze)
         ex.add_command(label='☁️  Thought cloud reminder  ' + ('✓' if self.cloud_enabled else '–'),
                        command=self._toggle_cloud)
+        ex.add_command(label='🌊  Flow mode (extend blocks)  ' + ('✓' if self.flow_mode else '–'),
+                       command=self._toggle_flow)
+        ex.add_command(label='🐾  Focus check-ins  ' + ('✓' if self.checkin_enabled else '–'),
+                       command=self._toggle_checkin)
         m.add_cascade(label='🧠  ADHD extras', menu=ex)
 
         m.add_separator()
@@ -1406,11 +1580,34 @@ class DesktopCat:
                  bg='#1e1e1e', fg=C_MUTE, font=('Helvetica', 11)).pack(padx=20)
 
         var = tk.StringVar(value=self.current_task)
-        e = tk.Entry(d, textvariable=var, width=36, font=('Helvetica', 12),
+        e = tk.Entry(d, textvariable=var, width=38, font=('Helvetica', 12),
                      bg='#2b2b2e', fg='#ffffff', insertbackground='#ffffff', relief='flat')
-        e.pack(padx=20, pady=12, ipady=4)
+        e.pack(padx=20, pady=(10, 4), ipady=4)
         e.focus_force()
         e.icursor('end')
+
+        # "Pick for me" — kill decision paralysis from your own list
+        if self.tasklist:
+            def pick():
+                var.set(random.choice(self.tasklist)); e.icursor('end')
+            self._button(d, '🎲  Pick from my list', pick, 'secondary',
+                         small=True).pack(pady=(0, 2))
+
+        # Chunking: optional sub-steps (comma separated)
+        stepvar = tk.StringVar()
+        tk.Label(d, text='Break into steps (optional, separate with commas)',
+                 bg='#1e1e1e', fg='#7a7a80', font=('Helvetica', 10)).pack(padx=20, pady=(8, 0))
+        tk.Entry(d, textvariable=stepvar, width=38, font=('Helvetica', 11),
+                 bg='#2b2b2e', fg='#e8e8ea', insertbackground='#fff', relief='flat'
+                 ).pack(padx=20, pady=(2, 4), ipady=3)
+
+        # Implementation intention: optional if–then plan
+        planvar = tk.StringVar()
+        tk.Label(d, text='If I get stuck, I will… (optional)',
+                 bg='#1e1e1e', fg='#7a7a80', font=('Helvetica', 10)).pack(padx=20, pady=(6, 0))
+        tk.Entry(d, textvariable=planvar, width=38, font=('Helvetica', 11),
+                 bg='#2b2b2e', fg='#e8e8ea', insertbackground='#fff', relief='flat'
+                 ).pack(padx=20, pady=(2, 6), ipady=3)
 
         hint = f'Focus {self.timer.focus_len} min · Break {self.timer.break_len} min'
         if self.gentle_start:
@@ -1423,8 +1620,10 @@ class DesktopCat:
 
         def start():
             task = var.get().strip()
+            steps = [s.strip() for s in stepvar.get().replace('\n', ',').split(',') if s.strip()]
+            plan = planvar.get().strip()
             close()
-            self.begin_focus(task)
+            self.begin_focus(task, steps, plan)
 
         self._button(btns, "Let's go 🐾", start, 'primary').pack(side='left', padx=6)
         self._button(btns, 'Cancel', close, 'secondary').pack(side='left', padx=6)
@@ -1493,6 +1692,195 @@ class DesktopCat:
         self._button(btns, 'Yes, keep going 🐾', keep_going, 'primary').pack(side='left', padx=5)
         self._button(btns, 'Short break', take_break, 'secondary').pack(side='left', padx=5)
         self._button(btns, "That's enough for now", done, 'secondary').pack(side='left', padx=5)
+
+    # ── FEATURE: flow mode — extend a block instead of a hard stop ───────────
+    def _show_flow_prompt(self):
+        if self._dialog_open:
+            self.timer.start_break()      # don't get stuck; just break
+            return
+        long_focus = self.timer.since_break >= LONG_FOCUS_NUDGE
+        d, close = self._new_dialog('Nice block 🎉')
+        head = 'You’ve been going a while.' if long_focus else 'In flow? Keep the momentum.'
+        tk.Label(d, text=head, bg='#1e1e1e', fg='#eaeaea',
+                 font=('Helvetica', 14, 'bold')).pack(padx=24, pady=(18, 2))
+        sub = (f'{int(self.timer.since_break)} min since your last break — a breather helps.'
+               if long_focus else 'Add a short stretch of focus, or take your break.')
+        tk.Label(d, text=sub, bg='#1e1e1e', fg=C_MUTE,
+                 font=('Helvetica', 11)).pack(padx=24, pady=(0, 14))
+
+        btns = tk.Frame(d, bg='#1e1e1e')
+        btns.pack(pady=(0, 18), padx=24)
+
+        def extend():
+            close()
+            self.info_msg = ''
+            self.timer.start_focus(FLOW_EXTEND_MIN)
+            self.state, self.state_timer = 'focus', 0
+
+        def brk():
+            close()
+            self.timer.start_break()
+            if self.thoughts:
+                self.root.after(400, self._show_thoughts_review)
+
+        if long_focus:
+            self._button(btns, 'Take my break', brk, 'primary').pack(side='left', padx=5)
+            self._button(btns, f'+{FLOW_EXTEND_MIN} min', extend, 'secondary').pack(side='left', padx=5)
+        else:
+            self._button(btns, f'+{FLOW_EXTEND_MIN} min 🌊', extend, 'primary').pack(side='left', padx=5)
+            self._button(btns, 'Take my break', brk, 'secondary').pack(side='left', padx=5)
+
+    # ── FEATURE: emotion check-in (RSD-aware, gentle reframes) ───────────────
+    def _show_checkin(self):
+        if self._dialog_open:
+            return
+        d, close = self._new_dialog('Quick check-in')
+        tk.Label(d, text='How are you feeling right now?', bg='#1e1e1e', fg='#eaeaea',
+                 font=('Helvetica', 14, 'bold')).pack(padx=24, pady=(18, 4))
+        msg = tk.Label(d, text='No judgement — just a check-in.', bg='#1e1e1e',
+                       fg=C_MUTE, font=('Helvetica', 11), wraplength=300, justify='center')
+        msg.pack(padx=24, pady=(0, 12))
+        row = tk.Frame(d, bg='#1e1e1e')
+        row.pack(padx=20)
+
+        def choose(key):
+            msg.configure(text=random.choice(REFRAMES.get(key, ['You’ve got this.'])),
+                          fg='#eaeaea')
+
+        for label, key in CHECK_MOODS:
+            self._button(row, label, (lambda k=key: choose(k)), 'secondary',
+                         small=True).pack(side='left', padx=4)
+        foot = tk.Frame(d, bg='#1e1e1e')
+        foot.pack(pady=(16, 16))
+        self._button(foot, 'Thanks 🐾', close, 'primary').pack()
+
+    # ── FEATURE: task list ("pick for me") ───────────────────────────────────
+    def _open_tasklist(self):
+        if self._dialog_open:
+            return
+        d, close = self._new_dialog('Task list')
+        tk.Label(d, text='Your task list', bg='#1e1e1e', fg='#eaeaea',
+                 font=('Helvetica', 14, 'bold')).pack(padx=20, pady=(16, 2))
+        tk.Label(d, text='"Pick from my list" in the focus dialog chooses one for you.',
+                 bg='#1e1e1e', fg=C_MUTE, font=('Helvetica', 10)).pack(padx=20)
+        rows = tk.Frame(d, bg='#1e1e1e')
+        rows.pack(padx=18, fill='x', pady=(8, 4))
+        addvar = tk.StringVar()
+
+        def rebuild():
+            for w in rows.winfo_children():
+                w.destroy()
+            if not self.tasklist:
+                tk.Label(rows, text='(empty)', bg='#1e1e1e', fg=C_MUTE,
+                         font=('Helvetica', 11)).pack(pady=6)
+            for i, t in enumerate(list(self.tasklist)):
+                r = tk.Frame(rows, bg='#1e1e1e')
+                r.pack(fill='x', pady=2)
+                tk.Label(r, text='• ' + t, bg='#1e1e1e', fg='#e8e8ea',
+                         font=('Helvetica', 11), wraplength=240, justify='left',
+                         anchor='w').pack(side='left', fill='x', expand=True)
+
+                def rm(idx=i):
+                    try:
+                        self.tasklist.pop(idx)
+                    except IndexError:
+                        pass
+                    self._save_tasks()
+                    rebuild()
+
+                self._button(r, '✕', rm, 'secondary', small=True).pack(side='right')
+
+        rebuild()
+        addrow = tk.Frame(d, bg='#1e1e1e')
+        addrow.pack(padx=18, pady=(4, 4), fill='x')
+        ae = tk.Entry(addrow, textvariable=addvar, width=24, font=('Helvetica', 11),
+                      bg='#2b2b2e', fg='#fff', insertbackground='#fff', relief='flat')
+        ae.pack(side='left', ipady=3, fill='x', expand=True)
+        ae.focus_force()
+
+        def add():
+            t = addvar.get().strip()
+            if t:
+                self.tasklist.append(t)
+                self._save_tasks()
+                addvar.set('')
+                rebuild()
+
+        self._button(addrow, 'Add', add, 'primary', small=True).pack(side='left', padx=(6, 0))
+        ae.bind('<Return>', lambda _: add())
+        foot = tk.Frame(d, bg='#1e1e1e')
+        foot.pack(pady=(10, 16))
+        self._button(foot, 'Close', close, 'secondary').pack()
+
+    # ── FEATURE: time-to-leave reminder (vs. time blindness) ─────────────────
+    def _open_leave_reminder(self):
+        if self._dialog_open:
+            return
+        d, close = self._new_dialog('Time-to-leave reminder')
+        tk.Label(d, text='Remind me to leave', bg='#1e1e1e', fg='#eaeaea',
+                 font=('Helvetica', 14, 'bold')).pack(padx=24, pady=(16, 2))
+        tk.Label(d, text='Beats time blindness — I’ll nudge you 15 & 5 min before.',
+                 bg='#1e1e1e', fg=C_MUTE, font=('Helvetica', 10)).pack(padx=24)
+        row = tk.Frame(d, bg='#1e1e1e')
+        row.pack(pady=10)
+        now = datetime.datetime.now()
+        hv = tk.StringVar(value=f'{now.hour:02d}')
+        mv = tk.StringVar(value=f'{now.minute:02d}')
+        tk.Entry(row, textvariable=hv, width=3, font=('Helvetica', 15), justify='center',
+                 bg='#2b2b2e', fg='#fff', insertbackground='#fff', relief='flat').pack(side='left', ipady=3)
+        tk.Label(row, text=':', bg='#1e1e1e', fg='#eaeaea',
+                 font=('Helvetica', 15)).pack(side='left', padx=2)
+        tk.Entry(row, textvariable=mv, width=3, font=('Helvetica', 15), justify='center',
+                 bg='#2b2b2e', fg='#fff', insertbackground='#fff', relief='flat').pack(side='left', ipady=3)
+        lblvar = tk.StringVar(value=self.leave_label)
+        tk.Entry(d, textvariable=lblvar, width=28, font=('Helvetica', 11),
+                 bg='#2b2b2e', fg='#e8e8ea', insertbackground='#fff', relief='flat').pack(padx=24, pady=(4, 8), ipady=3)
+        tk.Label(d, text='(what for? e.g. "catch the bus")', bg='#1e1e1e', fg='#7a7a80',
+                 font=('Helvetica', 9)).pack()
+        btns = tk.Frame(d, bg='#1e1e1e')
+        btns.pack(pady=(10, 16))
+
+        def setr():
+            try:
+                h, mi = int(hv.get()) % 24, int(mv.get()) % 60
+                self.leave_at = (h, mi)
+                self.leave_label = lblvar.get().strip()
+                self._leave_fired = set()
+                self.info_msg = f'⏰ set for {h:02d}:{mi:02d}'
+                self.info_until = self.frame + 80
+            except ValueError:
+                pass
+            close()
+
+        def clear():
+            self.leave_at = None
+            self._leave_fired = set()
+            close()
+
+        self._button(btns, 'Set reminder ⏰', setr, 'primary').pack(side='left', padx=5)
+        self._button(btns, 'Clear', clear, 'secondary').pack(side='left', padx=5)
+
+    def _leave_watch(self):
+        """Check the clock and nudge before a set leave time."""
+        try:
+            if self.leave_at is not None:
+                now = datetime.datetime.now()
+                target = now.replace(hour=self.leave_at[0], minute=self.leave_at[1],
+                                     second=0, microsecond=0)
+                mins_left = (target - now).total_seconds() / 60.0
+                for warn in (15, 5, 0):
+                    if warn not in self._leave_fired and -0.5 <= mins_left - warn <= 0.5:
+                        self._leave_fired.add(warn)
+                        lab = self.leave_label or 'leave'
+                        self.info_msg = (f'⏰ Time to {lab}!' if warn == 0
+                                         else f'⏰ {warn} min until {lab}')
+                        self.info_until = self.frame + 220
+                        self._play('wrapup')
+                if mins_left < -1:
+                    self.leave_at = None
+        except Exception:
+            pass
+        self.root.after(20000, self._leave_watch)
 
     # ── FEATURE 2: thought parking lot — park quickly ────────────────────────
     def _open_park(self):
@@ -1663,6 +2051,31 @@ class DesktopCat:
         self.cloud_enabled = not self.cloud_enabled
         if not self.cloud_enabled:
             self._hide_cloud()
+        self._save_settings()
+
+    def _toggle_flow(self):
+        self.flow_mode = not self.flow_mode
+        self._save_settings()
+
+    def _toggle_checkin(self):
+        self.checkin_enabled = not self.checkin_enabled
+        self._last_checkin = time.monotonic()
+        self._save_settings()
+
+    def _set_ambient_type(self, kind):
+        self.ambient_type = kind
+        self.ambient_on = True
+        # restart the loop so the change is heard immediately
+        if self._amb and self._amb.poll() is None:
+            try:
+                self._amb.terminate()
+            except Exception:
+                pass
+        self._amb = None
+        self._save_settings()
+
+    def _ambient_off(self):
+        self.ambient_on = False
         self._save_settings()
 
     # ── Cat size ─────────────────────────────────────────────────────────────

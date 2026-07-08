@@ -45,11 +45,28 @@ you out, while a calm presence keeps you coming back.
   it and it fades away on its own.
 - **🚶 Movement breaks** — short breaks with rotating suggestions (stand up, water,
   look out the window) so a 5-minute break doesn't become 40.
-- **🪟 Lives on your desktop** — draggable, transparent, always on top. Drag it
-  anywhere (it leans and wobbles with a little spring physics as you fling it
-  around), and resize it (right-click → *Size*: 50 / 65 / 80 / 100 %).
+- **🪟 Lives on your desktop** — draggable, transparent, always on top (even over
+  full-screen apps and on every Space). Drag it anywhere (it leans and wobbles with a
+  little spring physics), and resize it (right-click → *Size*: 50 / 65 / 80 / 100 %).
 
-Everything above can be toggled in the right-click menu, and every setting is optional —
+### More ADHD tools (all optional)
+
+- **🪓 Task breakdown** — split a task into comma-separated steps; the cat shows
+  `▸ 2/4` and you tick them off (right-click → *Next step*). Externalizing steps beats
+  working-memory overload.
+- **📝 If–then plan** — a quick *"if I get stuck, I'll…"* field (implementation
+  intentions, strong evidence for follow-through).
+- **🌊 Flow mode** — at a block's end you can add *+10 min* instead of a hard stop;
+  after a long stretch it gently steers you to the break.
+- **🎲 Task list & "pick for me"** — keep a small list and let the cat choose one, to
+  kill decision paralysis.
+- **🎵 Focus soundscape** — optional purr or built-in **brown noise**.
+- **💗 Check-in** — a gentle, RSD-aware mood check with kind reframes.
+- **⏰ Time-to-leave reminder** — beats time blindness; nudges 15 & 5 min before.
+- **🌱 Growing plant + surprises** — a plant that grows with your focus (never shrinks,
+  no streak guilt), a party hat once you're on a roll, and the occasional rare reward.
+
+Everything is in the right-click menu (**ADHD extras**), and every setting is optional —
 Neko works great with zero configuration.
 
 ### Controls
