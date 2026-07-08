@@ -129,16 +129,33 @@ class _ScaledCanvas:
     def __init__(self, canvas, s=1.0):
         self._c = canvas
         self._s = s
+        self._shear = 0.0      # Neigung (Scherung) für die Zieh-Physik
+        self._pivot_y = 20.0   # Drehpunkt oben am Kopf (nativ) → Körper schwingt
 
     def set_scale(self, s):
         self._s = s
 
+    def set_shear(self, sh):
+        self._shear = sh
+
     def _sc(self, args):
-        s = self._s
-        # create_polygon(_round_rect) übergibt eine einzelne Liste von Zahlen
-        if len(args) == 1 and isinstance(args[0], (list, tuple)):
-            return ([a * s if isinstance(a, (int, float)) else a for a in args[0]],)
-        return tuple(a * s if isinstance(a, (int, float)) else a for a in args)
+        s, sh, py = self._s, self._shear, self._pivot_y
+        single = len(args) == 1 and isinstance(args[0], (list, tuple))
+        seq = list(args[0]) if single else list(args)
+        out = []
+        i, n = 0, len(seq)
+        while i < n:
+            x = seq[i]
+            y = seq[i + 1] if i + 1 < n else None
+            if isinstance(x, (int, float)) and isinstance(y, (int, float)):
+                # Scherung um den Drehpunkt (nativ), dann skalieren
+                out.append((x + sh * (py - y)) * s)
+                out.append(y * s)
+                i += 2
+            else:
+                out.append(x)
+                i += 1
+        return (out,) if single else tuple(out)
 
     def _kw(self, kw):
         s = self._s
@@ -415,6 +432,14 @@ class DesktopCat:
         # Größe der Katze (Faktor auf die native Zeichenfläche)
         self.scale = 1.0
 
+        # Zieh-Physik: der Körper schwingt beim Ziehen und pendelt sich aus
+        self.shear = 0.0          # aktuelle Neigung
+        self.shear_v = 0.0        # Winkel-"Geschwindigkeit" (für Nachwackeln)
+        self.prev_wx = self.wx
+        self.prev_wy = self.wy
+        self.vx = 0.0             # Fenster-Geschwindigkeit (px/Frame)
+        self.vy = 0.0
+
         # ── ADHS-Extras (Feature 1–3), alle per Config an/abschaltbar ──
         self.gentle_start = True       # F3: 10s Atem-Countdown vor dem Fokus
         self.park_enabled = True       # F2: Gedanken-Parkplatz (Tap auf Katze)
@@ -651,10 +676,12 @@ class DesktopCat:
 
         # Katze in Originalkoordinaten zeichnen, dann als Ganzes verschieben
         # (Proxy skaliert Koordinaten/Breiten/Fonts; move skaliert den Versatz)
+        self.d.set_shear(self.shear)     # Zieh-Physik nur auf die Katze
         self._draw_cat()
         self.d.move('all', self.OX, oy)
 
-        # HUD (Ring/Timer/Aufgabe) und Konfetti in finalen Koordinaten
+        # HUD (Ring/Timer/Aufgabe) und Konfetti ohne Neigung, in finalen Koord.
+        self.d.set_shear(0.0)
         self._draw_hud()
         self._draw_confetti()
 
@@ -983,10 +1010,32 @@ class DesktopCat:
                 self.state_timer = 0
                 self.state = 'idle'
 
+    # ── Zieh-Physik ──────────────────────────────────────────────────────────
+    def _physics(self):
+        """Der Körper lehnt sich beim Ziehen entgegen der Bewegung und pendelt
+        sich beim Loslassen mit gedämpftem Nachwackeln wieder gerade."""
+        # Fenster-Geschwindigkeit dieses Frames
+        self.vx = self.wx - self.prev_wx
+        self.vy = self.wy - self.prev_wy
+        self.prev_wx, self.prev_wy = self.wx, self.wy
+
+        # Ziel-Neigung: nur beim Ziehen, begrenzt (sonst würde sie aus dem
+        # Fenster ragen und abgeschnitten). Beim Loslassen zieht es auf 0.
+        if self.is_dragging:
+            target = max(-0.30, min(0.30, self.vx * 0.010))
+        else:
+            target = 0.0
+
+        # gedämpfte Feder (unterkritisch → schwingt kurz nach)
+        self.shear_v = self.shear_v * 0.80 + (target - self.shear) * 0.14
+        self.shear += self.shear_v
+        self.shear = max(-0.32, min(0.32, self.shear))
+
     # ── Loop ─────────────────────────────────────────────────────────────────
     def _loop(self):
         self.frame += 1
         self._update()
+        self._physics()
         self._ambient_tick()
         self._draw()
         self.root.after(50, self._loop)
@@ -1126,8 +1175,15 @@ class DesktopCat:
             state='disabled')
         m.add_command(label='❌  Beenden', command=self._quit)
 
+        # macOS: das Popup-Menü erscheint nur, wenn das Fenster gerade den Fokus
+        # hat. Bei einem rahmenlosen Always-on-Top-Fenster muss man ihn erzwingen.
         try:
-            m.tk_popup(event.x_root, event.y_root)
+            self.root.lift()
+            self.root.focus_force()
+        except Exception:
+            pass
+        try:
+            m.tk_popup(int(event.x_root), int(event.y_root))
         finally:
             m.grab_release()
 

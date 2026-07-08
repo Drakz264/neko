@@ -44,7 +44,8 @@ you out, while a calm presence keeps you coming back.
 - **🚶 Movement breaks** — short breaks with rotating suggestions (stand up, water,
   look out the window) so a 5-minute break doesn't become 40.
 - **🪟 Lives on your desktop** — draggable, transparent, always on top. Drag it
-  anywhere, and resize it (right-click → *Größe*: 50 / 65 / 80 / 100 %).
+  anywhere (it leans and wobbles with a little spring physics as you fling it
+  around), and resize it (right-click → *Größe*: 50 / 65 / 80 / 100 %).
 
 Everything above can be toggled in the right-click menu, and every setting is optional —
 Neko works great with zero configuration.
