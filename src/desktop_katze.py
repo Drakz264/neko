@@ -558,6 +558,7 @@ class DesktopCat:
         self._load_settings()
         self._apply_scale(save=False)  # apply the loaded size to window/canvas
         self.root.after(CLOUD_CHECK_MS, self._cloud_scheduler)
+        self.root.after(400, self._spaces_tick)   # show over full-screen apps
 
     def _setup_bindings(self):
         c = self.d
@@ -670,6 +671,49 @@ class DesktopCat:
                 except Exception:
                     pass
             self._amb = None
+
+    # ── Show over full-screen apps / on every Space (macOS) ──────────────────
+    def _enable_all_spaces(self):
+        """macOS only: make the cat (and its dialogs) appear on every Space and
+        *over* full-screen apps (browser, video, etc.). Done by setting the
+        Cocoa window collectionBehavior via the Objective-C runtime through
+        ctypes — no external packages. Silently no-ops if unavailable."""
+        if platform.system() != 'Darwin':
+            return
+        try:
+            import ctypes
+            import ctypes.util
+            objc = ctypes.cdll.LoadLibrary(ctypes.util.find_library('objc'))
+            objc.objc_getClass.restype = ctypes.c_void_p
+            objc.objc_getClass.argtypes = [ctypes.c_char_p]
+            objc.sel_registerName.restype = ctypes.c_void_p
+            objc.sel_registerName.argtypes = [ctypes.c_char_p]
+            msg = objc.objc_msgSend
+
+            def call(restype, receiver, selname, argtypes=(), args=()):
+                msg.restype = restype
+                msg.argtypes = [ctypes.c_void_p, ctypes.c_void_p] + list(argtypes)
+                return msg(receiver, objc.sel_registerName(selname), *args)
+
+            # CanJoinAllSpaces (1<<0) | FullScreenAuxiliary (1<<8)
+            behavior = (1 << 0) | (1 << 8)
+            NSApplication = objc.objc_getClass(b'NSApplication')
+            app = call(ctypes.c_void_p, NSApplication, b'sharedApplication')
+            windows = call(ctypes.c_void_p, app, b'windows')
+            count = call(ctypes.c_ulong, windows, b'count')
+            for i in range(count):
+                win = call(ctypes.c_void_p, windows, b'objectAtIndex:',
+                           (ctypes.c_ulong,), (i,))
+                if win:
+                    call(None, win, b'setCollectionBehavior:',
+                         (ctypes.c_ulong,), (behavior,))
+        except Exception:
+            pass
+
+    def _spaces_tick(self):
+        # re-apply periodically so new dialogs / the cloud inherit it too
+        self._enable_all_spaces()
+        self.root.after(1500, self._spaces_tick)
 
     # ── Timer callbacks ──────────────────────────────────────────────────────
     def _pick_break_tip(self):
