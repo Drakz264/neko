@@ -91,6 +91,90 @@ ANTIFREEZE_TASKS = [
     'Just put pen & paper down and begin',
 ]
 
+# Context-aware anti-freeze: pick a 2-min starter that fits the task. Matched by
+# keywords in what you typed (German + English). First match wins; else generic.
+ANTIFREEZE_CATEGORIES = [
+    ('study', [
+        'study', 'studying', 'learn', 'learning', 'revise', 'revision', 'exam',
+        'test', 'quiz', 'read', 'reading', 'chapter', 'lecture', 'notes',
+        'flashcard', 'homework', 'math', 'maths', 'physics', 'chemistry',
+        'biology', 'history', 'vocab', 'vocabulary', 'geology',
+        'lernen', 'prüfung', 'klausur', 'üben', 'lesen', 'kapitel', 'vorlesung',
+        'hausaufgabe', 'mathe', 'vokabeln', 'karteikarten', 'referat', 'geologie',
+    ], [
+        'Just clear your desk down to only what this subject needs',
+        'Just open the book/PDF to the right page',
+        'Just read one paragraph out loud',
+        'Just write the topic and today’s date at the top of a page',
+        'Just make one flashcard',
+        'Just skim the headings for 2 minutes',
+    ]),
+    ('writing', [
+        'write', 'writing', 'essay', 'report', 'article', 'blog', 'thesis',
+        'draft', 'story', 'chapter',
+        'schreiben', 'aufsatz', 'bericht', 'text', 'hausarbeit', 'geschichte',
+    ], [
+        'Just write one ugly sentence — it can be terrible',
+        'Just write the title and three bullet points',
+        'Just open the doc and type the first heading',
+        'Just brain-dump for 2 minutes, no editing allowed',
+        'Just write what you want to say in one messy line',
+    ]),
+    ('coding', [
+        'code', 'coding', 'program', 'programming', 'bug', 'debug', 'refactor',
+        'function', 'script', 'app', 'website', 'api', 'feature',
+        'programmieren', 'fehler', 'funktion', 'skript',
+    ], [
+        'Just open the file and read the last thing you wrote',
+        'Just run it once and read the error',
+        'Just write one TODO comment for the next step',
+        'Just write the function name and a stub',
+        'Just reproduce the bug one time',
+    ]),
+    ('chores', [
+        'clean', 'cleaning', 'tidy', 'laundry', 'dishes', 'room', 'kitchen',
+        'chores', 'declutter', 'vacuum', 'wash',
+        'putzen', 'aufräumen', 'wäsche', 'geschirr', 'zimmer', 'küche', 'saubermachen',
+    ], [
+        'Just grab the 5 nearest things and put them away',
+        'Just clear one single surface',
+        'Just start one load / fill the sink',
+        'Just pick up 5 things off the floor',
+        'Just set a 2-minute timer and go',
+    ]),
+    ('admin', [
+        'email', 'mail', 'inbox', 'bills', 'bill', 'tax', 'taxes', 'form',
+        'application', 'paperwork', 'call', 'phone', 'appointment', 'admin',
+        'rechnung', 'steuer', 'formular', 'bewerbung', 'papierkram', 'anruf', 'termin',
+    ], [
+        'Just open the inbox and read the top item',
+        'Just write the subject line',
+        'Just find the one document you need',
+        'Just open the form and fill a single field',
+        'Just write down the phone number you need to call',
+    ]),
+    ('creative', [
+        'draw', 'drawing', 'design', 'paint', 'music', 'compose', 'video',
+        'edit', 'art', 'sketch', 'illustration',
+        'zeichnen', 'malen', 'musik', 'kunst', 'entwerfen',
+    ], [
+        'Just open the canvas and make one mark',
+        'Just set up your tools / workspace',
+        'Just make one deliberately bad rough sketch',
+        'Just collect two references and look at them',
+    ]),
+    ('exercise', [
+        'workout', 'exercise', 'gym', 'run', 'running', 'training', 'yoga',
+        'stretch', 'walk',
+        'sport', 'laufen', 'joggen', 'dehnen', 'fitness', 'training',
+    ], [
+        'Just put on your workout clothes',
+        'Just do 5 of anything',
+        'Just fill your water bottle and lace up',
+        'Just stretch for 2 minutes',
+    ]),
+]
+
 # ── Thought parking lot (Feature 2): its own JSON file ───────────────────────
 THOUGHTS_PATH = os.path.expanduser('~/.desktop_katze_gedanken.json')
 
@@ -431,6 +515,7 @@ class DesktopCat:
         # Focus / task state
         self.timer = FocusTimer(self)
         self.current_task = ''         # "What are you working on?"
+        self._goal = ''                # real goal behind an anti-freeze block
         self.break_tip = random.choice(BREAK_TIPS)
         self.info_msg = ''             # temporary speech bubble (dopamine/prompt)
         self.info_until = 0
@@ -1303,8 +1388,9 @@ class DesktopCat:
         # FEATURE 1: anti-freeze — for the moments when starting is blocked
         if self.antifreeze_enabled:
             def antifreeze():
+                goal = var.get().strip()
                 close()
-                self._start_antifreeze()
+                self._start_antifreeze(goal)
             self._button(d, "🧊  I don't know how to start", antifreeze,
                          'accent').pack(pady=(4, 16))
         else:
@@ -1313,8 +1399,18 @@ class DesktopCat:
         d.bind('<Return>', lambda _: start())
 
     # ── FEATURE 1: start anti-freeze + "keep going?" prompt ──────────────────
-    def _start_antifreeze(self):
-        self.current_task = random.choice(ANTIFREEZE_TASKS)
+    def _antifreeze_task(self, goal):
+        """Pick a 2-min starter that fits what you're working on."""
+        g = (goal or '').lower()
+        for _name, keys, tasks in ANTIFREEZE_CATEGORIES:
+            if any(k in g for k in keys):
+                return random.choice(tasks)
+        return random.choice(ANTIFREEZE_TASKS)
+
+    def _start_antifreeze(self, goal=''):
+        # remember the real goal so we can restore it if the user keeps going
+        self._goal = (goal or '').strip()
+        self.current_task = self._antifreeze_task(self._goal)
         self.info_msg = 'Just this — 2 minutes is enough 🧊'
         self.info_until = self.frame + 160
         self.timer.start_micro()
@@ -1334,8 +1430,11 @@ class DesktopCat:
 
         def keep_going():
             close()
-            # warmed up → straight into focus, without another breathing countdown
+            # warmed up → straight into focus, without another breathing countdown.
+            # Restore the real goal (we showed a tiny starter during the 2 min).
             self.info_msg = ''
+            if getattr(self, '_goal', ''):
+                self.current_task = self._goal
             self.timer.start_focus()
             self.state, self.state_timer = 'focus', 0
 
