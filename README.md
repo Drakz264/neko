@@ -40,7 +40,9 @@ you out, while a calm presence keeps you coming back.
   small 2-minute task ("just open the file and type the title") to break the paralysis.
 - **💭 Thought parking lot** — a random thought pops up ("order that Vespa part!")?
   Click the cat, type it, it's parked — *not* chased. Your focus stays intact; the cat
-  shows you the list at the end of the block.
+  shows you the list at the end of the block. Every now and then a little **cloud**
+  ("☁️ 3 thoughts · tap to see") drifts up so you can revisit them in one click; ignore
+  it and it fades away on its own.
 - **🚶 Movement breaks** — short breaks with rotating suggestions (stand up, water,
   look out the window) so a 5-minute break doesn't become 40.
 - **🪟 Lives on your desktop** — draggable, transparent, always on top. Drag it

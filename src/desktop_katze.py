@@ -115,6 +115,19 @@ BREAKS    = [3, 5, 10]
 # Available cat sizes (factor on the native 240×300 drawing area)
 SCALES = [0.5, 0.65, 0.8, 1.0]
 
+# Thought cloud (Feature 2b): a clickable reminder that pops up now and then
+CLOUD_INTERVAL = 150       # min seconds between appearances
+CLOUD_CHECK_MS = 15000     # how often to check whether to show it
+CLOUD_TIMEOUT = 30         # auto-hide after this many seconds without a click
+
+# Button styles (bg, fg, hover-bg) — real colored buttons, since macOS tk.Button
+# ignores background colors and would otherwise be nearly invisible.
+BTN_STYLES = {
+    'primary':   ('#5fd6a6', '#10241d', '#7ee3bb'),
+    'secondary': ('#3a3a3c', '#e8e8ea', '#4a4a4e'),
+    'accent':    ('#2f4a63', '#cfe8ff', '#3c5f80'),
+}
+
 
 def _today():
     return datetime.date.today().isoformat()
@@ -451,8 +464,15 @@ class DesktopCat:
         self._press_moved = False      # was it dragged during the click?
         self._dialog_open = False      # prevents stacked dialogs
 
+        # Thought cloud (Feature 2b): a clickable reminder that pops up now and then
+        self.cloud_enabled = True
+        self.cloud_win = None          # the cloud Toplevel while shown, else None
+        self._cloud_hide_id = None     # scheduled auto-hide
+        self.cloud_last = time.monotonic()
+
         self._load_settings()
         self._apply_scale(save=False)  # apply the loaded size to window/canvas
+        self.root.after(CLOUD_CHECK_MS, self._cloud_scheduler)
 
     def _setup_bindings(self):
         c = self.d
@@ -479,6 +499,7 @@ class DesktopCat:
         self.gentle_start = bool(d.get('gentle_start', True))
         self.park_enabled = bool(d.get('park_enabled', True))
         self.antifreeze_enabled = bool(d.get('antifreeze_enabled', True))
+        self.cloud_enabled = bool(d.get('cloud_enabled', True))
         self.scale = min(1.5, max(0.4, float(d.get('scale', 1.0))))
         # only take over daily stats if they're from today
         if d.get('stats_date') == _today():
@@ -496,6 +517,7 @@ class DesktopCat:
             'gentle_start': self.gentle_start,
             'park_enabled': self.park_enabled,
             'antifreeze_enabled': self.antifreeze_enabled,
+            'cloud_enabled': self.cloud_enabled,
             'scale': self.scale,
             'stats_date': self.timer.stats_date,
             'blocks_today': self.timer.blocks_today,
@@ -1161,6 +1183,8 @@ class DesktopCat:
                        command=self._toggle_park)
         ex.add_command(label='🧊  Anti-freeze button  ' + ('✓' if self.antifreeze_enabled else '–'),
                        command=self._toggle_antifreeze)
+        ex.add_command(label='☁️  Thought cloud reminder  ' + ('✓' if self.cloud_enabled else '–'),
+                       command=self._toggle_cloud)
         m.add_cascade(label='🧠  ADHD extras', menu=ex)
 
         m.add_separator()
@@ -1200,15 +1224,46 @@ class DesktopCat:
                 d.destroy()
             except Exception:
                 pass
+            # give focus back to the cat window so the right-click menu works
+            # again immediately (otherwise the borderless window stays inactive
+            # and you'd have to click/drag the cat first).
+            try:
+                self.root.lift()
+                self.root.focus_force()
+                self.canvas.focus_set()
+            except Exception:
+                pass
 
         d.protocol('WM_DELETE_WINDOW', close)
         d.bind('<Escape>', lambda _: close())
         return d, close
 
-    def _dialog_button(self, parent, text, command, primary=False):
-        f = ('Helvetica', 12, 'bold') if primary else ('Helvetica', 12)
-        return tk.Button(parent, text=text, command=command, font=f, relief='flat',
-                         highlightbackground='#1e1e1e', padx=14, pady=4)
+    def _button(self, parent, text, command, kind='secondary', small=False):
+        """A clearly visible colored button (Frame+Label), because macOS
+        tk.Button ignores background colors and renders nearly invisibly."""
+        bg, fg, hover = BTN_STYLES.get(kind, BTN_STYLES['secondary'])
+        size = 11 if small else 12
+        weight = 'bold' if kind == 'primary' else 'normal'
+        padx, pady = (10, 3) if small else (16, 7)
+        f = tk.Frame(parent, bg=bg, highlightthickness=0)
+        lbl = tk.Label(f, text=text, bg=bg, fg=fg, font=('Helvetica', size, weight),
+                       padx=padx, pady=pady, cursor='pointinghand')
+        lbl.pack()
+
+        def on_click(_):
+            command()
+
+        def on_enter(_):
+            f.configure(bg=hover); lbl.configure(bg=hover)
+
+        def on_leave(_):
+            f.configure(bg=bg); lbl.configure(bg=bg)
+
+        for w in (f, lbl):
+            w.bind('<Button-1>', on_click)
+            w.bind('<Enter>', on_enter)
+            w.bind('<Leave>', on_leave)
+        return f
 
     # ── Task dialog ("What are you working on?") ─────────────────────────────
     def _open_task_dialog(self):
@@ -1242,18 +1297,16 @@ class DesktopCat:
             close()
             self.begin_focus(task)
 
-        self._dialog_button(btns, "Let's go 🐾", start, primary=True).pack(side='left', padx=6)
-        self._dialog_button(btns, 'Cancel', close).pack(side='left', padx=6)
+        self._button(btns, "Let's go 🐾", start, 'primary').pack(side='left', padx=6)
+        self._button(btns, 'Cancel', close, 'secondary').pack(side='left', padx=6)
 
         # FEATURE 1: anti-freeze — for the moments when starting is blocked
         if self.antifreeze_enabled:
             def antifreeze():
                 close()
                 self._start_antifreeze()
-            tk.Button(d, text="🧊  I don't know how to start",
-                      command=antifreeze, font=('Helvetica', 11), relief='flat',
-                      highlightbackground='#1e1e1e', fg='#cfe8ff',
-                      padx=10, pady=4).pack(pady=(0, 16))
+            self._button(d, "🧊  I don't know how to start", antifreeze,
+                         'accent').pack(pady=(4, 16))
         else:
             tk.Frame(d, bg='#1e1e1e', height=8).pack()
 
@@ -1294,9 +1347,9 @@ class DesktopCat:
             close()
             self.timer.stop()
 
-        self._dialog_button(btns, 'Yes, keep going 🐾', keep_going, primary=True).pack(side='left', padx=5)
-        self._dialog_button(btns, 'Short break', take_break).pack(side='left', padx=5)
-        self._dialog_button(btns, "That's enough for now", done).pack(side='left', padx=5)
+        self._button(btns, 'Yes, keep going 🐾', keep_going, 'primary').pack(side='left', padx=5)
+        self._button(btns, 'Short break', take_break, 'secondary').pack(side='left', padx=5)
+        self._button(btns, "That's enough for now", done, 'secondary').pack(side='left', padx=5)
 
     # ── FEATURE 2: thought parking lot — park quickly ────────────────────────
     def _open_park(self):
@@ -1326,8 +1379,8 @@ class DesktopCat:
                 self.info_until = self.frame + 40
             close()
 
-        self._dialog_button(btns, 'Park 💭', park, primary=True).pack(side='left', padx=6)
-        self._dialog_button(btns, 'Cancel', close).pack(side='left', padx=6)
+        self._button(btns, 'Park 💭', park, 'primary').pack(side='left', padx=6)
+        self._button(btns, 'Cancel', close, 'secondary').pack(side='left', padx=6)
         d.bind('<Return>', lambda _: park())
 
     # ── FEATURE 2: show thoughts at block end (handle/discard) ───────────────
@@ -1363,15 +1416,70 @@ class DesktopCat:
                     self._save_thoughts()
                     rebuild()
 
-                tk.Button(row, text='✓ done', command=discard,
-                          font=('Helvetica', 10), relief='flat',
-                          highlightbackground='#1e1e1e', fg='#9fe0b4').pack(side='right')
+                self._button(row, '✓ done', discard, 'secondary', small=True).pack(side='right')
 
         rebuild()
 
         foot = tk.Frame(d, bg='#1e1e1e')
         foot.pack(pady=(12, 16))
-        self._dialog_button(foot, 'Keep the rest & close', close).pack(side='left', padx=6)
+        self._button(foot, 'Keep the rest & close', close, 'secondary').pack(side='left', padx=6)
+
+    # ── FEATURE 2b: the thought cloud (periodic clickable reminder) ──────────
+    def _cloud_scheduler(self):
+        """Every so often, if there are parked thoughts and we're not focusing,
+        pop up a clickable cloud. It hides itself after CLOUD_TIMEOUT seconds."""
+        try:
+            if (self.cloud_enabled and self.thoughts and self.cloud_win is None
+                    and not self._dialog_open
+                    and self.timer.mode in ('idle', 'break')
+                    and time.monotonic() - self.cloud_last >= CLOUD_INTERVAL):
+                self._show_cloud()
+        except Exception:
+            pass
+        self.root.after(CLOUD_CHECK_MS, self._cloud_scheduler)
+
+    def _show_cloud(self):
+        if self.cloud_win is not None or not self.thoughts:
+            return
+        n = len(self.thoughts)
+        w = tk.Toplevel(self.root)
+        w.overrideredirect(True)
+        w.wm_attributes('-topmost', True)
+        x = int(self.wx)
+        y = max(30, int(self.wy) - 46)
+        w.geometry(f'+{x}+{y}')
+        frame = tk.Frame(w, bg='#2b2b2e', highlightbackground=C_BREAK, highlightthickness=2)
+        frame.pack()
+        text = f'☁️  {n} thought' + ('s' if n != 1 else '') + '  ·  tap to see'
+        lbl = tk.Label(frame, text=text, bg='#2b2b2e', fg='#e8e8ea',
+                       font=('Helvetica', 12, 'bold'), padx=12, pady=6, cursor='pointinghand')
+        lbl.pack()
+
+        def click(_):
+            self._hide_cloud()
+            self._show_thoughts_review()
+
+        for wid in (frame, lbl):
+            wid.bind('<Button-1>', click)
+        self.cloud_win = w
+        self.cloud_last = time.monotonic()
+        # auto-hide after CLOUD_TIMEOUT seconds without a click
+        self._cloud_hide_id = self.root.after(CLOUD_TIMEOUT * 1000, self._hide_cloud)
+
+    def _hide_cloud(self):
+        if self._cloud_hide_id is not None:
+            try:
+                self.root.after_cancel(self._cloud_hide_id)
+            except Exception:
+                pass
+            self._cloud_hide_id = None
+        if self.cloud_win is not None:
+            try:
+                self.cloud_win.destroy()
+            except Exception:
+                pass
+            self.cloud_win = None
+        self.cloud_last = time.monotonic()   # reset the interval after hiding
 
     # ── Settings toggles ─────────────────────────────────────────────────────
     def _set_focus_len(self, v):
@@ -1408,6 +1516,12 @@ class DesktopCat:
         self.antifreeze_enabled = not self.antifreeze_enabled
         self._save_settings()
 
+    def _toggle_cloud(self):
+        self.cloud_enabled = not self.cloud_enabled
+        if not self.cloud_enabled:
+            self._hide_cloud()
+        self._save_settings()
+
     # ── Cat size ─────────────────────────────────────────────────────────────
     def _apply_scale(self, s=None, save=True):
         if s is not None:
@@ -1428,6 +1542,7 @@ class DesktopCat:
 
     def _quit(self):
         self._save_settings()
+        self._hide_cloud()
         if self._amb and self._amb.poll() is None:
             try:
                 self._amb.terminate()
